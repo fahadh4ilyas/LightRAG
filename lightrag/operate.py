@@ -249,7 +249,7 @@ async def extract_entities(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types="[" + ", ".join(PROMPTS["DEFAULT_ENTITY_TYPES"]) + "]",
+        entity_types="[" + ", ".join(global_config["entity_types"] or PROMPTS["DEFAULT_ENTITY_TYPES"]) + "]",
     )
     continue_prompt = PROMPTS["entiti_continue_extraction"]
     if_loop_prompt = PROMPTS["entiti_if_loop_extraction"]
