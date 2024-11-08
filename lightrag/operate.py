@@ -67,7 +67,7 @@ async def _handle_entity_relation_summary(
     )
     context_base = dict(
         entity_name=entity_or_relation_name,
-        description_list=use_description.split(GRAPH_FIELD_SEP),
+        description_list=use_description,
     )
     use_prompt = prompt_template.format(**context_base)
     logger.debug(f"Trigger summary: {entity_or_relation_name}")
@@ -79,7 +79,7 @@ async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
-    if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
+    if len(record_attributes) < 4 or record_attributes[0] != 'entity':
         return None
     # add this record as a node in the G
     entity_name = clean_str(record_attributes[1].upper())
@@ -100,7 +100,7 @@ async def _handle_single_relationship_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
-    if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
+    if len(record_attributes) < 5 or record_attributes[0] != 'relationship':
         return None
     # add this record as edge
     source = clean_str(record_attributes[1].upper())
@@ -140,14 +140,10 @@ async def _merge_nodes_then_upsert(
         )
         already_description.append(already_node["description"])
 
-    entity_type = sorted(
-        Counter(
+    entity_type = Counter(
             [dp["entity_type"] for dp in nodes_data] + already_entitiy_types
-        ).items(),
-        key=lambda x: x[1],
-        reverse=True,
-    )[0][0]
-    description = GRAPH_FIELD_SEP.join(
+        ).most_common(1)[0][0]
+    description = '- ' + '\n- '.join(
         sorted(set([dp["description"] for dp in nodes_data] + already_description))
     )
     source_id = GRAPH_FIELD_SEP.join(
@@ -189,14 +185,14 @@ async def _merge_edges_then_upsert(
         )
         already_description.append(already_edge["description"])
         already_keywords.extend(
-            split_string_by_multi_markers(already_edge["keywords"], [GRAPH_FIELD_SEP])
+            split_string_by_multi_markers(already_edge["keywords"], [','])
         )
 
     weight = sum([dp["weight"] for dp in edges_data] + already_weights)
-    description = GRAPH_FIELD_SEP.join(
+    description = '- ' + '\n- '.join(
         sorted(set([dp["description"] for dp in edges_data] + already_description))
     )
-    keywords = GRAPH_FIELD_SEP.join(
+    keywords = ', '.join(
         sorted(set([dp["keywords"] for dp in edges_data] + already_keywords))
     )
     source_id = GRAPH_FIELD_SEP.join(
@@ -209,7 +205,7 @@ async def _merge_edges_then_upsert(
                 node_data={
                     "source_id": source_id,
                     "description": description,
-                    "entity_type": '"UNKNOWN"',
+                    "entity_type": 'UNKNOWN',
                 },
             )
     description = await _handle_entity_relation_summary(
@@ -253,7 +249,7 @@ async def extract_entities(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=",".join(PROMPTS["DEFAULT_ENTITY_TYPES"]),
+        entity_types="[" + ", ".join(PROMPTS["DEFAULT_ENTITY_TYPES"]) + "]",
     )
     continue_prompt = PROMPTS["entiti_continue_extraction"]
     if_loop_prompt = PROMPTS["entiti_if_loop_extraction"]
