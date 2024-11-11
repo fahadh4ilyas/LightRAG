@@ -138,7 +138,7 @@ async def _merge_nodes_then_upsert(
         already_source_ids.extend(
             split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
         )
-        already_description.append(already_node["description"])
+        already_description.append(already_node["description"].removeprefix('- '))
 
     entity_type = Counter(
             [dp["entity_type"] for dp in nodes_data] + already_entitiy_types
@@ -183,7 +183,7 @@ async def _merge_edges_then_upsert(
         already_source_ids.extend(
             split_string_by_multi_markers(already_edge["source_id"], [GRAPH_FIELD_SEP])
         )
-        already_description.append(already_edge["description"])
+        already_description.append(already_edge["description"].removeprefix('- '))
         already_keywords.extend(
             split_string_by_multi_markers(already_edge["keywords"], [','])
         )
