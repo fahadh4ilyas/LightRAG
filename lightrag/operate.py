@@ -993,8 +993,11 @@ async def naive_query(
         max_token_size=query_param.max_token_for_text_unit,
     )
     logger.info(f"Truncate {len(chunks)} to {len(maybe_trun_chunks)} chunks")
-    section = "\n--New Chunk--\n".join([c["content"] for c in maybe_trun_chunks])
+    chunks_text = [c["content"] for c in maybe_trun_chunks]
+    section = "\n--New Chunk--\n".join(chunks_text)
     if query_param.only_need_context:
+        if query_param.split_context:
+            return chunks_text
         return section
     sys_prompt_temp = PROMPTS["naive_rag_response"]
     sys_prompt = sys_prompt_temp.format(
