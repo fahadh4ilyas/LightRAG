@@ -1,5 +1,6 @@
 import asyncio
 import os
+import typing
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -221,11 +222,11 @@ class LightRAG:
             # "ArangoDBStorage": ArangoDBStorage
         }
 
-    def insert(self, string_or_strings):
+    def insert(self, string_or_strings: typing.Union[str, typing.List[str]], naive_only: bool = False):
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.ainsert(string_or_strings))
+        return loop.run_until_complete(self.ainsert(string_or_strings, naive_only))
 
-    async def ainsert(self, string_or_strings):
+    async def ainsert(self, string_or_strings: typing.Union[str, typing.List[str]], naive_only: bool = False):
         update_storage = False
         try:
             if isinstance(string_or_strings, str):
@@ -273,18 +274,19 @@ class LightRAG:
 
             await self.chunks_vdb.upsert(inserting_chunks)
 
-            logger.info("[Entity Extraction]...")
-            maybe_new_kg = await extract_entities(
-                inserting_chunks,
-                knowledge_graph_inst=self.chunk_entity_relation_graph,
-                entity_vdb=self.entities_vdb,
-                relationships_vdb=self.relationships_vdb,
-                global_config=asdict(self),
-            )
-            if maybe_new_kg is None:
-                logger.warning("No new entities and relationships found")
-                return
-            self.chunk_entity_relation_graph = maybe_new_kg
+            if not naive_only:
+                logger.info("[Entity Extraction]...")
+                maybe_new_kg = await extract_entities(
+                    inserting_chunks,
+                    knowledge_graph_inst=self.chunk_entity_relation_graph,
+                    entity_vdb=self.entities_vdb,
+                    relationships_vdb=self.relationships_vdb,
+                    global_config=asdict(self),
+                )
+                if maybe_new_kg is None:
+                    logger.warning("No new entities and relationships found")
+                    return
+                self.chunk_entity_relation_graph = maybe_new_kg
 
             await self.full_docs.upsert(new_docs)
             await self.text_chunks.upsert(inserting_chunks)
