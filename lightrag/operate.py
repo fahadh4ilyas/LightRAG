@@ -8,8 +8,6 @@ from .utils import (
     logger,
     clean_str,
     compute_mdhash_id,
-    decode_tokens_by_tiktoken,
-    encode_string_by_tiktoken,
     is_float_regex,
     list_of_list_to_csv,
     pack_user_ass_to_openai_messages,
@@ -28,16 +26,21 @@ from .base import (
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 
 
-def chunking_by_token_size(
-    content: str, overlap_token_size=128, max_token_size=1024, tiktoken_model="gpt-4o"
+async def chunking_by_token_size(
+    content: str, global_config: dict
 ):
-    tokens = encode_string_by_tiktoken(content, model_name=tiktoken_model)
+    string_encoder = global_config["embedding_string_encoder"]
+    tokens_decoder = global_config["embedding_tokens_decoder"]
+    max_token_size = global_config["chunk_token_size"]
+    overlap_token_size = global_config["chunk_overlap_token_size"]
+
+    tokens = await string_encoder(content)
     results = []
     for index, start in enumerate(
         range(0, len(tokens), max_token_size - overlap_token_size)
     ):
-        chunk_content = decode_tokens_by_tiktoken(
-            tokens[start : start + max_token_size], model_name=tiktoken_model
+        chunk_content = await tokens_decoder(
+            tokens[start : start + max_token_size]
         )
         results.append(
             {
@@ -56,15 +59,16 @@ async def _handle_entity_relation_summary(
 ) -> str:
     use_llm_func: callable = global_config["llm_model_func"]
     llm_max_tokens = global_config["llm_model_max_token_size"]
-    tiktoken_model_name = global_config["tiktoken_model_name"]
     summary_max_tokens = global_config["entity_summary_to_max_tokens"]
+    string_encoder = global_config["llm_string_encoder"]
+    tokens_decoder = global_config["llm_tokens_decoder"]
 
-    tokens = encode_string_by_tiktoken(description, model_name=tiktoken_model_name)
+    tokens = await string_encoder(description)
     if len(tokens) < summary_max_tokens:  # No need for summary
         return description
     prompt_template = PROMPTS["summarize_entity_descriptions"]
-    use_description = decode_tokens_by_tiktoken(
-        tokens[:llm_max_tokens], model_name=tiktoken_model_name
+    use_description = await tokens_decoder(
+        tokens[:llm_max_tokens]
     )
     context_base = dict(
         entity_name=entity_or_relation_name,
@@ -357,6 +361,9 @@ async def extract_entities(
             "Didn't extract any relationships, maybe your LLM is not working"
         )
         return None
+    
+    string_encoder = global_config["embedding_string_encoder"]
+    tokens_decoder = global_config["embedding_tokens_decoder"]
 
     if entity_vdb is not None:
         data_for_vdb = {
@@ -369,17 +376,19 @@ async def extract_entities(
         await entity_vdb.upsert(data_for_vdb)
 
     if relationships_vdb is not None:
-        data_for_vdb = {
-            compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
+        data_for_vdb = {}
+        for dp in all_relationships_data:
+            content = dp["keywords"] \
+                + dp["src_id"] \
+                + dp["tgt_id"] \
+                + dp["description"]
+            tokens = await string_encoder(content)
+            final_content = await tokens_decoder(tokens[:relationships_vdb.embedding_func.max_token_size])
+            data_for_vdb[compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-")] = {
                 "src_id": dp["src_id"],
                 "tgt_id": dp["tgt_id"],
-                "content": dp["keywords"]
-                + dp["src_id"]
-                + dp["tgt_id"]
-                + dp["description"],
+                "content": final_content
             }
-            for dp in all_relationships_data
-        }
         await relationships_vdb.upsert(data_for_vdb)
 
     return knowledge_graph_inst

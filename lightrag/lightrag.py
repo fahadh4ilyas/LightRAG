@@ -20,6 +20,8 @@ from .operate import (
 
 from .utils import (
     EmbeddingFunc,
+    encode_string_by_tiktoken,
+    decode_tokens_by_tiktoken,
     compute_mdhash_id,
     limit_async_func_call,
     convert_response_to_json,
@@ -79,7 +81,6 @@ class LightRAG:
     # text chunking
     chunk_token_size: int = 1200
     chunk_overlap_token_size: int = 100
-    tiktoken_model_name: str = "gpt-4o-mini"
 
     # entity extraction
     entity_types: list = None
@@ -103,6 +104,8 @@ class LightRAG:
     embedding_func: EmbeddingFunc = field(default_factory=lambda: openai_embedding)
     embedding_batch_num: int = 32
     embedding_func_max_async: int = 16
+    embedding_string_encoder: callable = encode_string_by_tiktoken
+    embedding_tokens_decoder: callable = decode_tokens_by_tiktoken
 
     # LLM
     llm_model_func: callable = gpt_4o_mini_complete  # hf_model_complete#
@@ -110,6 +113,8 @@ class LightRAG:
     llm_model_max_token_size: int = 32768
     llm_model_max_async: int = 16
     llm_model_kwargs: dict = field(default_factory=dict)
+    llm_string_encoder: callable = encode_string_by_tiktoken
+    llm_token_decoder: callable = decode_tokens_by_tiktoken
 
     # storage
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
@@ -250,11 +255,9 @@ class LightRAG:
                         **dp,
                         "full_doc_id": doc_key,
                     }
-                    for dp in chunking_by_token_size(
+                    async for dp in chunking_by_token_size(
                         doc["content"],
-                        overlap_token_size=self.chunk_overlap_token_size,
-                        max_token_size=self.chunk_token_size,
-                        tiktoken_model=self.tiktoken_model_name,
+                        global_config=asdict(self)
                     )
                 }
                 inserting_chunks.update(chunks)
