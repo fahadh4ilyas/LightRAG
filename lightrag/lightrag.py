@@ -10,6 +10,7 @@ from typing import Type, cast
 from .llm import (
     gpt_4o_mini_complete,
     openai_embedding,
+    no_rerank,
 )
 from .operate import (
     chunking_by_token_size,
@@ -111,6 +112,9 @@ class LightRAG:
     llm_model_max_token_size: int = 32768
     llm_model_max_async: int = 16
     llm_model_kwargs: dict = field(default_factory=dict)
+
+    # Reranker
+    rerank_func: callable = no_rerank
 
     # storage
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)

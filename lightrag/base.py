@@ -20,6 +20,8 @@ class QueryParam:
     split_context: bool = False
     only_need_prompt: bool = False
     response_type: str = "Multiple Paragraphs"
+    # Do rerank process for naive query
+    do_rerank: bool = False
     # Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.
     top_k: int = 60
     # Number of document chunks to retrieve.

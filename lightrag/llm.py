@@ -33,6 +33,13 @@ from .utils import compute_args_hash, wrap_embedding_func_with_attrs
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+async def no_rerank(
+    query: str,
+    chunks: List[Any]
+) -> List[int]:
+    
+    return chunks
+
 
 @retry(
     stop=stop_after_attempt(3),
