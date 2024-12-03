@@ -62,6 +62,9 @@ class BaseVectorStorage(StorageNameSpace):
         """
         raise NotImplementedError
 
+    async def drop(self):
+        raise NotImplementedError
+
 
 @dataclass
 class BaseKVStorage(Generic[T], StorageNameSpace):

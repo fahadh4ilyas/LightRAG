@@ -299,6 +299,9 @@ class OracleVectorDBStorage(BaseVectorStorage):
     async def index_done_callback(self):
         pass
 
+    async def drop(self):
+        pass
+
     #################### query method ###############
     async def query(self, query: str, top_k=5) -> Union[dict, list[dict]]:
         """从向量数据库中查询数据"""
