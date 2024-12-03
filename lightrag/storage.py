@@ -165,6 +165,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def index_done_callback(self):
         self._client.save()
 
+    async def drop(self):
+        ids = [d["__id__"] for d in self.client_storage["data"]]
+        self._client.delete(ids)
+
 
 @dataclass
 class NetworkXStorage(BaseGraphStorage):
