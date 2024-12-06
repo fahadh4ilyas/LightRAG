@@ -1004,6 +1004,7 @@ async def naive_query(
     query,
     chunks_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage[TextChunkSchema],
+    docs_db: BaseKVStorage,
     query_param: QueryParam,
     global_config: dict,
 ):
@@ -1025,11 +1026,15 @@ async def naive_query(
     )
     logger.info(f"Truncate {len(chunks)} to {len(maybe_trun_chunks)} chunks")
     chunks_text = [c["content"] for c in maybe_trun_chunks]
+    source_ids = set([c["full_doc_id"] for c in maybe_trun_chunks])
+    source_docs = await docs_db.get_by_ids(source_ids)
+    for source_doc in source_docs:
+        source_doc.pop("content")
     section = "\n--New Chunk--\n".join(chunks_text)
     if query_param.only_need_context:
         if query_param.split_context:
-            return chunks_text
-        return section
+            return {'contexts': chunks_text, 'sources': source_docs}
+        return {'contexts': section, 'sources': source_docs}
     sys_prompt_temp = PROMPTS["naive_rag_response"]
     sys_prompt = sys_prompt_temp.format(
         content_data=section, response_type=query_param.response_type
@@ -1053,4 +1058,4 @@ async def naive_query(
             .strip()
         )
 
-    return response
+    return {'contexts': response, 'sources': source_docs}

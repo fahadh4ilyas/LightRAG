@@ -254,16 +254,22 @@ class LightRAG:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.ainsert(string_or_strings, naive_only))
 
-    async def ainsert(self, string_or_strings: typing.Union[str, typing.List[str]], naive_only: bool = False):
+    async def ainsert(self, string_or_strings: typing.Union[str, typing.List[str], typing.List[typing.Dict[str, typing.Any]]], naive_only: bool = False):
         update_storage = False
         try:
             if isinstance(string_or_strings, str):
                 string_or_strings = [string_or_strings]
 
-            new_docs = {
-                compute_mdhash_id(c.strip(), prefix="doc-"): {"content": c.strip()}
-                for c in string_or_strings
-            }
+            if isinstance(string_or_strings[0], str):
+                new_docs = {
+                    compute_mdhash_id(c.strip(), prefix="doc-"): {"content": c.strip()}
+                    for c in string_or_strings
+                }
+            else:
+                new_docs = {
+                    compute_mdhash_id(c.strip(), prefix="doc-"): {**c, "content": c["content"].strip()}
+                    for c in string_or_strings
+                }
             _add_doc_keys = await self.full_docs.filter_keys(list(new_docs.keys()))
             new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
             if not len(new_docs):
@@ -494,6 +500,7 @@ class LightRAG:
                 query,
                 self.chunks_vdb,
                 self.text_chunks,
+                self.full_docs,
                 param,
                 asdict(self),
             )
