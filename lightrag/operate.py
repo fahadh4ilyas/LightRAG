@@ -17,7 +17,6 @@ from .utils import (
     split_string_by_multi_markers,
     truncate_list_by_token_size,
     process_combine_contexts,
-    locate_json_string_body_from_string,
 )
 from .base import (
     BaseGraphStorage,
@@ -59,6 +58,9 @@ async def _handle_entity_relation_summary(
     llm_max_tokens = global_config["llm_model_max_token_size"]
     tiktoken_model_name = global_config["tiktoken_model_name"]
     summary_max_tokens = global_config["entity_summary_to_max_tokens"]
+    language = global_config["addon_params"].get(
+        "language", PROMPTS["DEFAULT_LANGUAGE"]
+    )
 
     tokens = encode_string_by_tiktoken(description, model_name=tiktoken_model_name)
     if len(tokens) < summary_max_tokens:  # No need for summary
@@ -70,6 +72,7 @@ async def _handle_entity_relation_summary(
     context_base = dict(
         entity_name=entity_or_relation_name,
         description_list=use_description,
+        language=language,
     )
     use_prompt = prompt_template.format(**context_base)
     logger.debug(f"Trigger summary: {entity_or_relation_name}")
@@ -257,6 +260,16 @@ async def extract_entities(
     else:
         examples = "\n".join(PROMPTS["entity_extraction_examples"])
 
+    example_context_base = dict(
+        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
+        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        entity_types=",".join(PROMPTS["DEFAULT_ENTITY_TYPES"]),
+        language=language,
+    )
+    # add example's format
+    examples = examples.format(**example_context_base)
+
     entity_extract_prompt = PROMPTS["entity_extraction"]
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
@@ -279,7 +292,11 @@ async def extract_entities(
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
         content = chunk_dp["content"]
-        hint_prompt = entity_extract_prompt.format(**context_base, input_text=content)
+        # hint_prompt = entity_extract_prompt.format(**context_base, input_text=content)
+        hint_prompt = entity_extract_prompt.format(
+            **context_base, input_text="{input_text}"
+        ).format(**context_base, input_text=content)
+
         final_result = await use_llm_func(hint_prompt)
         history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
         for now_glean_index in range(entity_extract_max_gleaning):
@@ -440,6 +457,9 @@ async def kg_query(
         )
     else:
         examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+    language = global_config["addon_params"].get(
+        "language", PROMPTS["DEFAULT_LANGUAGE"]
+    )
 
     # Set mode
     if query_param.mode not in ["local", "global", "hybrid"]:
@@ -449,15 +469,22 @@ async def kg_query(
     # LLM generate keywords
     use_model_func = global_config["llm_model_func"]
     kw_prompt_temp = PROMPTS["keywords_extraction"]
-    kw_prompt = kw_prompt_temp.format(query=query, examples=examples)
-    result = await use_model_func(kw_prompt)
+    kw_prompt = kw_prompt_temp.format(query=query, examples=examples, language=language)
+    result = await use_model_func(kw_prompt, keyword_extraction=True)
     logger.info("kw_prompt result:")
     print(result)
     try:
-        json_text = locate_json_string_body_from_string(result)
-        keywords_data = json.loads(json_text)
-        hl_keywords = keywords_data.get("high_level_keywords", [])
-        ll_keywords = keywords_data.get("low_level_keywords", [])
+        # json_text = locate_json_string_body_from_string(result) # handled in use_model_func
+        match = re.search(r"\{.*\}", result, re.DOTALL)
+        if match:
+            result = match.group(0)
+            keywords_data = json.loads(result)
+
+            hl_keywords = keywords_data.get("high_level_keywords", [])
+            ll_keywords = keywords_data.get("low_level_keywords", [])
+        else:
+            logger.error("No JSON-like structure found in the result.")
+            return PROMPTS["fail_response"]
 
     # Handle parsing error
     except json.JSONDecodeError as e:
@@ -503,8 +530,9 @@ async def kg_query(
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
+        stream=query_param.stream,
     )
-    if len(response) > len(sys_prompt):
+    if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
             response.replace(sys_prompt, "")
             .replace("user", "")
@@ -927,7 +955,6 @@ async def _find_related_text_unit_from_relationships(
         split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
         for dp in edge_datas
     ]
-
     all_text_units_lookup = {}
 
     for index, unit_list in enumerate(text_units):

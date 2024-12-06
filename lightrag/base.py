@@ -20,6 +20,7 @@ class QueryParam:
     split_context: bool = False
     only_need_prompt: bool = False
     response_type: str = "Multiple Paragraphs"
+    stream: bool = False
     # Do rerank process for naive query
     do_rerank: bool = False
     # Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.
