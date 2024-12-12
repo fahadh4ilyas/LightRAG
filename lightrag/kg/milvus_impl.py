@@ -86,3 +86,6 @@ class MilvusVectorDBStorge(BaseVectorStorage):
             {**dp["entity"], "id": dp["id"], "distance": dp["distance"]}
             for dp in results[0]
         ]
+    
+    async def drop(self):
+        pass

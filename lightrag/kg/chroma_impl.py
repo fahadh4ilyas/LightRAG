@@ -170,3 +170,6 @@ class ChromaVectorDBStorage(BaseVectorStorage):
     async def index_done_callback(self):
         # ChromaDB handles persistence automatically
         pass
+
+    async def drop(self):
+        pass
