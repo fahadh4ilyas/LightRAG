@@ -5,7 +5,6 @@ import os
 import struct
 from functools import lru_cache
 from typing import List, Dict, Callable, Any, Union
-
 import aioboto3
 import aiohttp
 import numpy as np
@@ -27,13 +26,11 @@ from tenacity import (
 )
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from .base import BaseKVStorage
 from .utils import (
-    compute_args_hash,
     wrap_embedding_func_with_attrs,
     locate_json_string_body_from_string,
-    quantize_embedding,
-    get_best_cached_response,
+    safe_unicode_decode,
+    logger,
 )
 
 import sys
@@ -73,40 +70,19 @@ async def openai_complete_if_cache(
     openai_async_client = (
         AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
     )
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
+    kwargs.pop("hashing_kv", None)
+    kwargs.pop("keyword_extraction", None)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
-    if hashing_kv is not None:
-        # Calculate args_hash only when using cache
-        args_hash = compute_args_hash(model, messages)
-
-        # Get embedding cache configuration
-        embedding_cache_config = hashing_kv.global_config.get(
-            "embedding_cache_config", {"enabled": False, "similarity_threshold": 0.95}
-        )
-        is_embedding_cache_enabled = embedding_cache_config["enabled"]
-        if is_embedding_cache_enabled:
-            # Use embedding cache
-            embedding_model_func = hashing_kv.global_config["embedding_func"]["func"]
-            current_embedding = await embedding_model_func([prompt])
-            quantized, min_val, max_val = quantize_embedding(current_embedding[0])
-            best_cached_response = await get_best_cached_response(
-                hashing_kv,
-                current_embedding[0],
-                similarity_threshold=embedding_cache_config["similarity_threshold"],
-            )
-            if best_cached_response is not None:
-                return best_cached_response
-        else:
-            # Use regular cache
-            if_cache_return = await hashing_kv.get_by_id(args_hash)
-            if if_cache_return is not None:
-                return if_cache_return["return"]
-
+    # 添加日志输出
+    logger.debug("===== Query Input to LLM =====")
+    logger.debug(f"Query: {prompt}")
+    logger.debug(f"System prompt: {system_prompt}")
+    logger.debug("Full context:")
     if "response_format" in kwargs:
         response = await openai_async_client.beta.chat.completions.parse(
             model=model, messages=messages, **kwargs
@@ -115,29 +91,24 @@ async def openai_complete_if_cache(
         response = await openai_async_client.chat.completions.create(
             model=model, messages=messages, **kwargs
         )
-    content = response.choices[0].message.content
-    if r"\u" in content:
-        content = content.encode("utf-8").decode("unicode_escape")
 
-    if hashing_kv is not None:
-        await hashing_kv.upsert(
-            {
-                args_hash: {
-                    "return": content,
-                    "model": model,
-                    "embedding": quantized.tobytes().hex()
-                    if is_embedding_cache_enabled
-                    else None,
-                    "embedding_shape": quantized.shape
-                    if is_embedding_cache_enabled
-                    else None,
-                    "embedding_min": min_val if is_embedding_cache_enabled else None,
-                    "embedding_max": max_val if is_embedding_cache_enabled else None,
-                    "original_prompt": prompt,
-                }
-            }
-        )
-    return content
+    if hasattr(response, "__aiter__"):
+
+        async def inner():
+            async for chunk in response:
+                content = chunk.choices[0].delta.content
+                if content is None:
+                    continue
+                if r"\u" in content:
+                    content = safe_unicode_decode(content.encode("utf-8"))
+                yield content
+
+        return inner()
+    else:
+        content = response.choices[0].message.content
+        if r"\u" in content:
+            content = safe_unicode_decode(content.encode("utf-8"))
+        return content
 
 
 @retry(
@@ -167,8 +138,7 @@ async def azure_openai_complete_if_cache(
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
         api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
     )
-
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
+    kwargs.pop("hashing_kv", None)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -176,56 +146,12 @@ async def azure_openai_complete_if_cache(
     if prompt is not None:
         messages.append({"role": "user", "content": prompt})
 
-    if hashing_kv is not None:
-        # Calculate args_hash only when using cache
-        args_hash = compute_args_hash(model, messages)
-
-        # Get embedding cache configuration
-        embedding_cache_config = hashing_kv.global_config.get(
-            "embedding_cache_config", {"enabled": False, "similarity_threshold": 0.95}
-        )
-        is_embedding_cache_enabled = embedding_cache_config["enabled"]
-        if is_embedding_cache_enabled:
-            # Use embedding cache
-            embedding_model_func = hashing_kv.global_config["embedding_func"]["func"]
-            current_embedding = await embedding_model_func([prompt])
-            quantized, min_val, max_val = quantize_embedding(current_embedding[0])
-            best_cached_response = await get_best_cached_response(
-                hashing_kv,
-                current_embedding[0],
-                similarity_threshold=embedding_cache_config["similarity_threshold"],
-            )
-            if best_cached_response is not None:
-                return best_cached_response
-        else:
-            # Use regular cache
-            if_cache_return = await hashing_kv.get_by_id(args_hash)
-            if if_cache_return is not None:
-                return if_cache_return["return"]
-
     response = await openai_async_client.chat.completions.create(
         model=model, messages=messages, **kwargs
     )
+    content = response.choices[0].message.content
 
-    if hashing_kv is not None:
-        await hashing_kv.upsert(
-            {
-                args_hash: {
-                    "return": response.choices[0].message.content,
-                    "model": model,
-                    "embedding": quantized.tobytes().hex()
-                    if is_embedding_cache_enabled
-                    else None,
-                    "embedding_shape": quantized.shape
-                    if is_embedding_cache_enabled
-                    else None,
-                    "embedding_min": min_val if is_embedding_cache_enabled else None,
-                    "embedding_max": max_val if is_embedding_cache_enabled else None,
-                    "original_prompt": prompt,
-                }
-            }
-        )
-    return response.choices[0].message.content
+    return content
 
 
 class BedrockError(Exception):
@@ -256,7 +182,7 @@ async def bedrock_complete_if_cache(
     os.environ["AWS_SESSION_TOKEN"] = os.environ.get(
         "AWS_SESSION_TOKEN", aws_session_token
     )
-
+    kwargs.pop("hashing_kv", None)
     # Fix message history format
     messages = []
     for history_message in history_messages:
@@ -289,34 +215,6 @@ async def bedrock_complete_if_cache(
                 kwargs.pop(param)
             )
 
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
-    if hashing_kv is not None:
-        # Calculate args_hash only when using cache
-        args_hash = compute_args_hash(model, messages)
-
-        # Get embedding cache configuration
-        embedding_cache_config = hashing_kv.global_config.get(
-            "embedding_cache_config", {"enabled": False, "similarity_threshold": 0.95}
-        )
-        is_embedding_cache_enabled = embedding_cache_config["enabled"]
-        if is_embedding_cache_enabled:
-            # Use embedding cache
-            embedding_model_func = hashing_kv.global_config["embedding_func"]["func"]
-            current_embedding = await embedding_model_func([prompt])
-            quantized, min_val, max_val = quantize_embedding(current_embedding[0])
-            best_cached_response = await get_best_cached_response(
-                hashing_kv,
-                current_embedding[0],
-                similarity_threshold=embedding_cache_config["similarity_threshold"],
-            )
-            if best_cached_response is not None:
-                return best_cached_response
-        else:
-            # Use regular cache
-            if_cache_return = await hashing_kv.get_by_id(args_hash)
-            if if_cache_return is not None:
-                return if_cache_return["return"]
-
     # Call model via Converse API
     session = aioboto3.Session()
     async with session.client("bedrock-runtime") as bedrock_async_client:
@@ -325,30 +223,7 @@ async def bedrock_complete_if_cache(
         except Exception as e:
             raise BedrockError(e)
 
-        if hashing_kv is not None:
-            await hashing_kv.upsert(
-                {
-                    args_hash: {
-                        "return": response["output"]["message"]["content"][0]["text"],
-                        "model": model,
-                        "embedding": quantized.tobytes().hex()
-                        if is_embedding_cache_enabled
-                        else None,
-                        "embedding_shape": quantized.shape
-                        if is_embedding_cache_enabled
-                        else None,
-                        "embedding_min": min_val
-                        if is_embedding_cache_enabled
-                        else None,
-                        "embedding_max": max_val
-                        if is_embedding_cache_enabled
-                        else None,
-                        "original_prompt": prompt,
-                    }
-                }
-            )
-
-        return response["output"]["message"]["content"][0]["text"]
+    return response["output"]["message"]["content"][0]["text"]
 
 
 @lru_cache(maxsize=1)
@@ -379,40 +254,12 @@ async def hf_model_if_cache(
 ) -> str:
     model_name = model
     hf_model, hf_tokenizer = initialize_hf_model(model_name)
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
-
-    if hashing_kv is not None:
-        # Calculate args_hash only when using cache
-        args_hash = compute_args_hash(model, messages)
-
-        # Get embedding cache configuration
-        embedding_cache_config = hashing_kv.global_config.get(
-            "embedding_cache_config", {"enabled": False, "similarity_threshold": 0.95}
-        )
-        is_embedding_cache_enabled = embedding_cache_config["enabled"]
-        if is_embedding_cache_enabled:
-            # Use embedding cache
-            embedding_model_func = hashing_kv.global_config["embedding_func"]["func"]
-            current_embedding = await embedding_model_func([prompt])
-            quantized, min_val, max_val = quantize_embedding(current_embedding[0])
-            best_cached_response = await get_best_cached_response(
-                hashing_kv,
-                current_embedding[0],
-                similarity_threshold=embedding_cache_config["similarity_threshold"],
-            )
-            if best_cached_response is not None:
-                return best_cached_response
-        else:
-            # Use regular cache
-            if_cache_return = await hashing_kv.get_by_id(args_hash)
-            if if_cache_return is not None:
-                return if_cache_return["return"]
-
+    kwargs.pop("hashing_kv", None)
     input_prompt = ""
     try:
         input_prompt = hf_tokenizer.apply_chat_template(
@@ -456,24 +303,7 @@ async def hf_model_if_cache(
     response_text = hf_tokenizer.decode(
         output[0][len(inputs["input_ids"][0]) :], skip_special_tokens=True
     )
-    if hashing_kv is not None:
-        await hashing_kv.upsert(
-            {
-                args_hash: {
-                    "return": response_text,
-                    "model": model,
-                    "embedding": quantized.tobytes().hex()
-                    if is_embedding_cache_enabled
-                    else None,
-                    "embedding_shape": quantized.shape
-                    if is_embedding_cache_enabled
-                    else None,
-                    "embedding_min": min_val if is_embedding_cache_enabled else None,
-                    "embedding_max": max_val if is_embedding_cache_enabled else None,
-                    "original_prompt": prompt,
-                }
-            }
-        )
+
     return response_text
 
 
@@ -494,46 +324,17 @@ async def ollama_model_if_cache(
     # kwargs.pop("response_format", None) # allow json
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
-
+    kwargs.pop("hashing_kv", None)
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
-    if hashing_kv is not None:
-        # Calculate args_hash only when using cache
-        args_hash = compute_args_hash(model, messages)
-
-        # Get embedding cache configuration
-        embedding_cache_config = hashing_kv.global_config.get(
-            "embedding_cache_config", {"enabled": False, "similarity_threshold": 0.95}
-        )
-        is_embedding_cache_enabled = embedding_cache_config["enabled"]
-        if is_embedding_cache_enabled:
-            # Use embedding cache
-            embedding_model_func = hashing_kv.global_config["embedding_func"]["func"]
-            current_embedding = await embedding_model_func([prompt])
-            quantized, min_val, max_val = quantize_embedding(current_embedding[0])
-            best_cached_response = await get_best_cached_response(
-                hashing_kv,
-                current_embedding[0],
-                similarity_threshold=embedding_cache_config["similarity_threshold"],
-            )
-            if best_cached_response is not None:
-                return best_cached_response
-        else:
-            # Use regular cache
-            if_cache_return = await hashing_kv.get_by_id(args_hash)
-            if if_cache_return is not None:
-                return if_cache_return["return"]
-
     response = await ollama_client.chat(model=model, messages=messages, **kwargs)
     if stream:
-        """ cannot cache stream response """
+        """cannot cache stream response"""
 
         async def inner():
             async for chunk in response:
@@ -541,30 +342,7 @@ async def ollama_model_if_cache(
 
         return inner()
     else:
-        result = response["message"]["content"]
-        if hashing_kv is not None:
-            await hashing_kv.upsert(
-                {
-                    args_hash: {
-                        "return": result,
-                        "model": model,
-                        "embedding": quantized.tobytes().hex()
-                        if is_embedding_cache_enabled
-                        else None,
-                        "embedding_shape": quantized.shape
-                        if is_embedding_cache_enabled
-                        else None,
-                        "embedding_min": min_val
-                        if is_embedding_cache_enabled
-                        else None,
-                        "embedding_max": max_val
-                        if is_embedding_cache_enabled
-                        else None,
-                        "original_prompt": prompt,
-                    }
-                }
-            )
-        return result
+        return response["message"]["content"]
 
 
 @lru_cache(maxsize=1)
@@ -638,8 +416,8 @@ async def lmdeploy_model_if_cache(
         import lmdeploy
         from lmdeploy import version_info, GenerationConfig
     except Exception:
-        raise ImportError("Please install lmdeploy before intialize lmdeploy backend.")
-
+        raise ImportError("Please install lmdeploy before initialize lmdeploy backend.")
+    kwargs.pop("hashing_kv", None)
     kwargs.pop("response_format", None)
     max_new_tokens = kwargs.pop("max_tokens", 512)
     tp = kwargs.pop("tp", 1)
@@ -671,36 +449,8 @@ async def lmdeploy_model_if_cache(
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
 
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
-
-    if hashing_kv is not None:
-        # Calculate args_hash only when using cache
-        args_hash = compute_args_hash(model, messages)
-
-        # Get embedding cache configuration
-        embedding_cache_config = hashing_kv.global_config.get(
-            "embedding_cache_config", {"enabled": False, "similarity_threshold": 0.95}
-        )
-        is_embedding_cache_enabled = embedding_cache_config["enabled"]
-        if is_embedding_cache_enabled:
-            # Use embedding cache
-            embedding_model_func = hashing_kv.global_config["embedding_func"]["func"]
-            current_embedding = await embedding_model_func([prompt])
-            quantized, min_val, max_val = quantize_embedding(current_embedding[0])
-            best_cached_response = await get_best_cached_response(
-                hashing_kv,
-                current_embedding[0],
-                similarity_threshold=embedding_cache_config["similarity_threshold"],
-            )
-            if best_cached_response is not None:
-                return best_cached_response
-        else:
-            # Use regular cache
-            if_cache_return = await hashing_kv.get_by_id(args_hash)
-            if if_cache_return is not None:
-                return if_cache_return["return"]
 
     gen_config = GenerationConfig(
         skip_special_tokens=skip_special_tokens,
@@ -717,31 +467,28 @@ async def lmdeploy_model_if_cache(
         session_id=1,
     ):
         response += res.response
-
-    if hashing_kv is not None:
-        await hashing_kv.upsert(
-            {
-                args_hash: {
-                    "return": response,
-                    "model": model,
-                    "embedding": quantized.tobytes().hex()
-                    if is_embedding_cache_enabled
-                    else None,
-                    "embedding_shape": quantized.shape
-                    if is_embedding_cache_enabled
-                    else None,
-                    "embedding_min": min_val if is_embedding_cache_enabled else None,
-                    "embedding_max": max_val if is_embedding_cache_enabled else None,
-                    "original_prompt": prompt,
-                }
-            }
-        )
     return response
 
 
 class GPTKeywordExtractionFormat(BaseModel):
     high_level_keywords: List[str]
     low_level_keywords: List[str]
+
+
+async def openai_complete(
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+) -> Union[str, AsyncIterator[str]]:
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    if keyword_extraction:
+        kwargs["response_format"] = "json"
+    model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
+    return await openai_complete_if_cache(
+        model_name,
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        **kwargs,
+    )
 
 
 async def gpt_4o_complete(
@@ -878,6 +625,40 @@ async def openai_embedding(
         model=model, input=texts, encoding_format="float"
     )
     return np.array([dp.embedding for dp in response.data])
+
+
+async def fetch_data(url, headers, data):
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=data) as response:
+            response_json = await response.json()
+            data_list = response_json.get("data", [])
+            return data_list
+
+
+async def jina_embedding(
+    texts: list[str],
+    dimensions: int = 1024,
+    late_chunking: bool = False,
+    base_url: str = None,
+    api_key: str = None,
+) -> np.ndarray:
+    if api_key:
+        os.environ["JINA_API_KEY"] = api_key
+    url = "https://api.jina.ai/v1/embeddings" if not base_url else base_url
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {os.environ['JINA_API_KEY']}",
+    }
+    data = {
+        "model": "jina-embeddings-v3",
+        "normalized": True,
+        "embedding_type": "float",
+        "dimensions": f"{dimensions}",
+        "late_chunking": late_chunking,
+        "input": texts,
+    }
+    data_list = await fetch_data(url, headers, data)
+    return np.array([dp["embedding"] for dp in data_list])
 
 
 @wrap_embedding_func_with_attrs(embedding_dim=2048, max_token_size=512)
@@ -1153,6 +934,8 @@ class MultiModel:
         self, prompt, system_prompt=None, history_messages=[], **kwargs
     ) -> str:
         kwargs.pop("model", None)  # stop from overwriting the custom model name
+        kwargs.pop("keyword_extraction", None)
+        kwargs.pop("mode", None)
         next_model = self._next_model()
         args = dict(
             prompt=prompt,
