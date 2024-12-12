@@ -298,7 +298,7 @@ class LightRAG:
                 }
             else:
                 new_docs = {
-                    compute_mdhash_id(c.strip(), prefix="doc-"): {**c, "content": c["content"].strip()}
+                    compute_mdhash_id(c["content"].strip(), prefix="doc-"): {**c, "content": c["content"].strip()}
                     for c in string_or_strings
                 }
             _add_doc_keys = await self.full_docs.filter_keys(list(new_docs.keys()))
