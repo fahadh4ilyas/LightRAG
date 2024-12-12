@@ -134,7 +134,6 @@ class LightRAG:
     tiktoken_model_name: str = "gpt-4o-mini"
 
     # entity extraction
-    entity_types: list = None
     entity_extract_max_gleaning: int = 1
     entity_summary_to_max_tokens: int = 500
 
